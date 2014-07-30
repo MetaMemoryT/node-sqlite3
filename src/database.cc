@@ -4,6 +4,7 @@
 #include "macros.h"
 #include "database.h"
 #include "statement.h"
+#include "character_tokenizer.h"
 
 using namespace node_sqlite3;
 
@@ -24,6 +25,8 @@ void Database::Init(Handle<Object> target) {
     NODE_SET_PROTOTYPE_METHOD(t, "serialize", Serialize);
     NODE_SET_PROTOTYPE_METHOD(t, "parallelize", Parallelize);
     NODE_SET_PROTOTYPE_METHOD(t, "configure", Configure);
+    
+    NODE_SET_PROTOTYPE_METHOD(t, "loadCharacterTokenizer", LoadCharacterTokenizer);
 
     NODE_SET_GETTER(t, "open", OpenGetter);
 
@@ -589,6 +592,19 @@ void Database::Work_Wait(Baton* baton) {
     delete baton;
 }
 
+NAN_METHOD(Database::LoadCharacterTokenizer) {
+  NanScope();
+  Database* db = ObjectWrap::Unwrap<Database>(args.This());
+
+  REQUIRE_ARGUMENT_STRING(0, filename);
+  OPTIONAL_ARGUMENT_FUNCTION(1, callback);
+
+  Baton* baton = new LoadExtensionBaton(db, callback, *filename);
+  db->Schedule(Work_BeginLoadCharacterTokenizer, baton, true);
+
+  NanReturnValue(args.This());
+}
+
 NAN_METHOD(Database::LoadExtension) {
     NanScope();
     Database* db = ObjectWrap::Unwrap<Database>(args.This());
@@ -602,6 +618,16 @@ NAN_METHOD(Database::LoadExtension) {
     NanReturnValue(args.This());
 }
 
+void Database::Work_BeginLoadCharacterTokenizer(Baton* baton) {
+    assert(baton->db->locked);
+    assert(baton->db->open);
+    assert(baton->db->_handle);
+    assert(baton->db->pending == 0);
+    int status = uv_queue_work(uv_default_loop(),
+        &baton->request, Work_LoadCharacterTokenizer, (uv_after_work_cb)Work_AfterLoadExtension);
+    assert(status == 0);
+}
+
 void Database::Work_BeginLoadExtension(Baton* baton) {
     assert(baton->db->locked);
     assert(baton->db->open);
@@ -610,6 +636,53 @@ void Database::Work_BeginLoadExtension(Baton* baton) {
     int status = uv_queue_work(uv_default_loop(),
         &baton->request, Work_LoadExtension, (uv_after_work_cb)Work_AfterLoadExtension);
     assert(status == 0);
+}
+
+/*
+ ** Register a tokenizer implementation with FTS3 or FTS4.
+ */
+static int registerTokenizer(
+                             sqlite3 *db,
+                             char *zName,
+                             const sqlite3_tokenizer_module *p
+                             ){
+    int rc;
+    sqlite3_stmt *pStmt;
+    const char *zSql = "SELECT fts3_tokenizer(?, ?)";
+
+    rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0);
+    if( rc!=SQLITE_OK ){
+        return rc;
+    }
+
+    sqlite3_bind_text(pStmt, 1, zName, -1, SQLITE_STATIC);
+    sqlite3_bind_blob(pStmt, 2, &p, sizeof(p), SQLITE_STATIC);
+    sqlite3_step(pStmt);
+
+    return sqlite3_finalize(pStmt);
+}
+
+void Database::Work_LoadCharacterTokenizer(uv_work_t* req) {
+    LoadExtensionBaton* baton = static_cast<LoadExtensionBaton*>(req->data);
+
+    sqlite3_enable_load_extension(baton->db->_handle, 1);
+
+    char* message = NULL;
+    char token_name[] = "character";
+    const sqlite3_tokenizer_module *ptr;
+
+    // get the tokenizer
+    get_character_tokenizer_module(&ptr);
+
+    // register character tokenizer, note that you need to register it everytime the database is opened
+    registerTokenizer(baton->db->_handle, token_name, ptr);
+
+    sqlite3_enable_load_extension(baton->db->_handle, 0);
+
+    if (baton->status != SQLITE_OK && message != NULL) {
+        baton->message = std::string(message);
+        sqlite3_free(message);
+    }
 }
 
 void Database::Work_LoadExtension(uv_work_t* req) {

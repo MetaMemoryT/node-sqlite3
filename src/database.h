@@ -142,6 +142,11 @@ protected:
     static void Work_Close(uv_work_t* req);
     static void Work_AfterClose(uv_work_t* req);
 
+    static NAN_METHOD(LoadCharacterTokenizer);
+    static void Work_BeginLoadCharacterTokenizer(Baton* baton);
+    static void Work_LoadCharacterTokenizer(uv_work_t* req);
+    static void Work_AfterLoadCharacterTokenizer(uv_work_t* req);
+
     static NAN_METHOD(LoadExtension);
     static void Work_BeginLoadExtension(Baton* baton);
     static void Work_LoadExtension(uv_work_t* req);
